@@ -43,6 +43,7 @@
     .progress { height: 9px; border-radius: 99px; background: #dfebe0; overflow: hidden; margin-bottom: 25px; }
     .progress > span { display: block; width: 0; height: 100%; background: #20927b; border-radius: inherit; transition: width .25s ease; }
     .question-meta { color: #20806d; font-size: .77rem; font-weight: 850; letter-spacing: .13em; text-transform: uppercase; margin-bottom: 12px; }
+    .retry-tag { display: inline-block; margin: 0 0 12px; padding: 7px 11px; border-radius: 8px; background: #fff0e8; color: #a34f32; font-size: .8rem; font-weight: 800; }
     .question-text { white-space: pre-line; margin: 0 0 22px; color: #183d35; font-size: clamp(1.22rem, 3vw, 1.54rem); line-height: 1.42; font-weight: 750; }
     .choice-list { display: grid; gap: 11px; margin-bottom: 20px; }
     .choice { width: 100%; display: flex; align-items: flex-start; gap: 14px; border: 1.5px solid #dce8df; border-radius: 14px; padding: 15px 17px; background: #fcfdfa; color: #2b463d; text-align: left; line-height: 1.45; }
@@ -97,17 +98,18 @@
       <div class="quiz-head"><span id="progress-label"></span><span id="running-score"></span></div>
       <div class="progress" aria-hidden="true"><span id="progress-fill"></span></div>
       <div class="panel">
+        <span class="retry-tag" id="retry-tag" hidden>Câu vừa trả lời sai</span>
         <div class="question-meta" id="question-meta"></div>
         <h2 class="question-text" id="question-text"></h2>
         <div class="choice-list" id="choice-list"></div>
         <p class="choice-tip" id="choice-tip"></p>
         <div id="feedback" class="feedback" role="status" hidden></div>
-        <div class="quiz-actions"><span class="score-small" id="question-source"></span><button class="primary" id="action-button" disabled>Kiểm tra đáp án</button></div>
+        <div class="quiz-actions"><span class="score-small" id="question-source"></span><button class="primary" id="action-button" hidden>Câu tiếp theo →</button></div>
       </div>
     </section>
 
     <section id="result-screen" hidden>
-      <div class="panel"><div class="result-icon" aria-hidden="true">✓</div><p class="eyebrow">Hoàn thành</p><h2>Kết quả của bạn</h2><p class="result-score" id="result-score"></p><p class="result-copy" id="result-copy"></p><div class="result-actions"><button class="primary" id="retry-button">Làm bài mới →</button><button class="secondary" id="retry-wrong-button" hidden>Ôn lại câu sai</button></div><div class="review" id="review" hidden><h3>Câu cần ôn lại</h3><div id="review-list"></div></div></div>
+      <div class="panel"><div class="result-icon" aria-hidden="true">✓</div><p class="eyebrow">Hoàn thành</p><h2>Kết quả của bạn</h2><p class="result-score" id="result-score"></p><p class="result-copy" id="result-copy"></p><div class="result-actions"><button class="primary" id="retry-button">Làm bài mới →</button><button class="secondary" id="retry-wrong-button" hidden>Ôn lại câu sai</button></div><div class="review" id="review" hidden><h3>Các câu đã sai ở lượt đầu</h3><div id="review-list"></div></div></div>
     </section>
     <footer>Nguồn câu hỏi: <a href="https://quizlet.com/vn/1031104729/hcm202-new-soan-doc-quyen-boi-thuy-tien-flash-cards" target="_blank" rel="noopener noreferrer">Quizlet HCM202</a> · Trích xuất qua bản thẻ Knowt</footer>
   </main>
@@ -145,23 +147,26 @@
     }
     function start(cards) {
       const pool = cards || (config.order === 'random' ? shuffled(allCards) : [...allCards]);
-      session = {cards: cards ? [...cards] : pool.slice(0, config.count), index: 0, selected: new Set(), submitted: false, correct: 0, wrong: []};
+      const picked = cards ? [...cards] : pool.slice(0, config.count);
+      session = {cards: picked.map(card => ({card, retry: false})), baseCount: picked.length, index: 0, selected: new Set(), submitted: false, correct: 0, wrong: []};
       showScreen('quiz-screen'); renderQuestion();
     }
-    function current() { return session.cards[session.index]; }
+    function currentEntry() { return session.cards[session.index]; }
+    function current() { return currentEntry().card; }
     function sameKeys(a, b) { return a.length === b.length && a.every(key => b.includes(key)); }
     function renderQuestion() {
       const card = current();
       session.selected = new Set(); session.submitted = false;
       $('progress-label').textContent = `Câu ${session.index + 1} / ${session.cards.length}`;
-      $('running-score').textContent = `${session.correct} câu đúng`;
+      $('running-score').textContent = `${session.correct} câu đúng lượt đầu`;
       $('progress-fill').style.width = `${(session.index / session.cards.length) * 100}%`;
       $('question-meta').textContent = card.correct.length > 1 ? `Chọn ${card.correct.length} đáp án` : 'Chọn 1 đáp án';
+      $('retry-tag').hidden = !currentEntry().retry;
       $('question-text').textContent = card.prompt;
       $('question-source').textContent = `Câu gốc #${card.number}`;
-      $('choice-tip').textContent = card.correct.length > 1 ? `Câu này có ${card.correct.length} đáp án đúng.` : 'Chọn một đáp án để kiểm tra.';
+      $('choice-tip').textContent = card.correct.length > 1 ? `Chọn ${card.correct.length} đáp án; câu sẽ được chấm ngay khi chọn đủ.` : 'Chọn một đáp án để kiểm tra ngay.';
       $('feedback').hidden = true; $('feedback').replaceChildren();
-      $('action-button').textContent = 'Kiểm tra đáp án'; $('action-button').disabled = true;
+      $('action-button').hidden = true;
       const list = $('choice-list'); list.replaceChildren();
       for (const option of card.options) {
         const button = document.createElement('button');
@@ -182,14 +187,17 @@
         else if (session.selected.size < current().correct.length) session.selected.add(key);
       } else session.selected = new Set([key]);
       for (const button of $('choice-list').children) button.setAttribute('aria-pressed', String(session.selected.has(button.dataset.key)));
-      $('action-button').disabled = session.selected.size !== current().correct.length;
+      if (session.selected.size === current().correct.length) submitAnswer();
     }
     function submitAnswer() {
       const card = current(); const chosen = [...session.selected].sort();
       const correct = sameKeys(chosen, card.correct);
       session.submitted = true;
-      if (correct) session.correct++;
-      else session.wrong.push({card, chosen});
+      if (!currentEntry().retry) {
+        if (correct) session.correct++;
+        else session.wrong.push({card, chosen});
+      }
+      if (!correct) session.cards.splice(Math.min(session.index + 4, session.cards.length), 0, {card, retry: true});
       for (const button of $('choice-list').children) {
         button.disabled = true;
         if (card.correct.includes(button.dataset.key)) button.classList.add('correct');
@@ -203,22 +211,22 @@
         const note = document.createElement('small'); note.textContent = `Ghi chú từ bộ thẻ: ${card.sourceAnswer}`; feedback.append(note);
       }
       feedback.hidden = false;
-      $('running-score').textContent = `${session.correct} câu đúng`;
+      $('running-score').textContent = `${session.correct} câu đúng lượt đầu`;
       $('progress-fill').style.width = `${((session.index + 1) / session.cards.length) * 100}%`;
       $('action-button').textContent = session.index + 1 === session.cards.length ? 'Xem kết quả →' : 'Câu tiếp theo →';
-      $('action-button').disabled = false;
+      $('action-button').hidden = false;
     }
     function next() {
-      if (!session.submitted) { submitAnswer(); return; }
+      if (!session.submitted) return;
       session.index++;
       if (session.index >= session.cards.length) showResult();
       else renderQuestion();
     }
     function showResult() {
       showScreen('result-screen');
-      $('result-score').textContent = `${session.correct}/${session.cards.length}`;
-      const pct = Math.round(session.correct / session.cards.length * 100);
-      $('result-copy').textContent = `Bạn trả lời đúng ${pct}% câu hỏi. ${session.wrong.length ? `Có ${session.wrong.length} câu để ôn lại bên dưới.` : 'Bạn đã trả lời đúng toàn bộ!'} `;
+      $('result-score').textContent = `${session.correct}/${session.baseCount}`;
+      const pct = Math.round(session.correct / session.baseCount * 100);
+      $('result-copy').textContent = `Bạn trả lời đúng ${pct}% ở lượt đầu. ${session.wrong.length ? `${session.wrong.length} câu từng trả lời sai đã được làm lại và liệt kê bên dưới.` : 'Bạn đã trả lời đúng toàn bộ!'} `;
       $('retry-wrong-button').hidden = session.wrong.length === 0;
       const review = $('review'); review.hidden = session.wrong.length === 0;
       const list = $('review-list'); list.replaceChildren();
@@ -238,7 +246,7 @@
       if ($('quiz-screen').hidden || event.altKey || event.ctrlKey || event.metaKey || event.repeat) return;
       const key = event.key.toUpperCase();
       if ('ABCD'.includes(key) && key.length === 1 && !session.submitted && current().options.some(option => option.key === key)) select(key);
-      else if (event.key === 'Enter' && !$('action-button').disabled) next();
+      else if (event.key === 'Enter' && session.submitted) next();
     });
     renderChips();
   </script>
